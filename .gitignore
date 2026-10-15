@@ -1,0 +1,4 @@
+state.json
+state.prev.json
+node_modules
+.DS_Store

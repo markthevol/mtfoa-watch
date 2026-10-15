@@ -1,0 +1,59 @@
+# Outside watchdog for the MTFOA site: every 5 minutes, ask the public health addresses a few questions and push a message to the phone
+# (ntfy) when something goes down, as a reminder every 30 minutes, and when it is back. Needs one secret: NTFY_TOPIC.
+# This repository is public, so it keeps NOTHING about outages in the repository: the last state lives in GitHub's private cache and the
+# run log only says how many checks answered. The details go to the phone.
+name: MTFOA watchdog
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write            # only for the monthly heartbeat commit below
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load the last state (private cache)
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: watchdog-state-never-matches-exactly
+          restore-keys: watchdog-state-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check the site and message the phone
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          [ -f state.json ] && cp state.json state.prev.json || true
+          node watch.mjs
+          if [ ! -f state.prev.json ] || ! cmp -s state.json state.prev.json; then echo "changed=1" >> "$GITHUB_ENV"; fi
+
+      - name: Save the state when it changed (private cache)
+        if: env.changed == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: watchdog-state-${{ github.run_id }}
+
+      - name: Keep the schedule alive (GitHub pauses idle repositories after 60 days)
+        run: |
+          set -e
+          last=$(git log -1 --format=%ct 2>/dev/null || echo 0); now=$(date +%s)
+          if [ $((now - last)) -gt 2160000 ]; then
+            git config user.name "mtfoa-watchdog"; git config user.email "watchdog@users.noreply.github.com"
+            date -u +%FT%TZ > heartbeat.txt; git add heartbeat.txt; git commit -m "heartbeat"; git push
+          fi
